@@ -217,6 +217,17 @@ _COMMENT_LIKE_TYPES = {
 
 # Past this age Meta only accepts a reply tagged as written by a person.
 HUMAN_AGENT_AFTER = timedelta(hours=24)
+# And the HUMAN_AGENT tag itself expires: 7 days after the person last wrote,
+# Meta accepts no reply at all, by any route. Sending anyway earns a rejection
+# the member cannot act on, so the attempt is not made.
+HUMAN_AGENT_WINDOW = timedelta(days=7)
+# Platforms that enforce Meta's messaging window. Threads has no DM API at all,
+# so its messages never reach this path.
+_MESSAGING_WINDOW_PLATFORMS = {"facebook", "instagram", "instagram_login"}
+
+
+class ReplyWindowClosedError(Exception):
+    """The platform's reply window has expired — no send can succeed."""
 
 
 # Meta subcodes for "this conversation is outside the window you may write in".
@@ -251,6 +262,13 @@ def _reply_failure_reason(exc: Exception) -> str:
     and the UI gets a stable sentence instead.
     """
     from providers.exceptions import OAuthError, RateLimitError, TokenExpiredError
+
+    if isinstance(exc, ReplyWindowClosedError):
+        return (
+            "the platform's 7-day reply window for this conversation has closed, "
+            "so no reply can be delivered — not by retrying, and not by "
+            "reconnecting. Answer here as an internal note, or reach them another way."
+        )
 
     if isinstance(exc, RateLimitError):
         return "the account has hit its rate limit. Wait a few minutes and try again."
@@ -300,7 +318,13 @@ def _send_platform_reply(message, body: str) -> str:
             extra=extra,
         )
     else:
-        overdue = timezone.now() - message.received_at > HUMAN_AGENT_AFTER
+        age = timezone.now() - message.received_at
+        if account.platform in _MESSAGING_WINDOW_PLATFORMS and age > HUMAN_AGENT_WINDOW:
+            raise ReplyWindowClosedError(
+                f"{account.platform} conversation is {age.days} days old; "
+                f"the HUMAN_AGENT window is {HUMAN_AGENT_WINDOW.days} days"
+            )
+        overdue = age > HUMAN_AGENT_AFTER
         result = provider.reply_to_message(
             access_token=account.oauth_access_token,
             message_id=message.platform_message_id,
