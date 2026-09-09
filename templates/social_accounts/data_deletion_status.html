@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Data Deletion Request - Brightbean{% endblock %}
+
+{% block auth_content %}
+<div class="w-full max-w-md px-4">
+    <!-- Header -->
+    <div class="text-center mb-8">
+        {% if deletion_request.status == "failed" %}
+        <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4" style="background: var(--error-50);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--error-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>
+            </svg>
+        </div>
+        {% else %}
+        <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-4" style="background: var(--success-50);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--success-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5"/>
+            </svg>
+        </div>
+        {% endif %}
+        <h1 class="text-2xl font-bold tracking-tight" style="color: var(--text-primary);">
+            Data deletion request
+        </h1>
+        <p class="text-sm mt-2 max-w-xs mx-auto leading-relaxed" style="color: var(--text-secondary);">
+            {% if deletion_request.status == "completed" %}
+            Your {{ deletion_request.get_platform_display }} data has been deleted from Brightbean.
+            {% elif deletion_request.status == "nothing_to_delete" %}
+            We received your request. There was no {{ deletion_request.get_platform_display }} data
+            stored in Brightbean for your account.
+            {% else %}
+            We received your request, but part of the deletion did not complete. Our team has been
+            notified and will finish it.
+            {% endif %}
+        </p>
+    </div>
+
+    <!-- Card -->
+    <div class="auth-card">
+        <dl class="text-sm space-y-3">
+            <div class="flex items-start justify-between gap-4">
+                <dt style="color: var(--text-tertiary);">Confirmation code</dt>
+                <dd class="font-mono text-xs break-all text-right" style="color: var(--text-primary);">
+                    {{ deletion_request.confirmation_code }}
+                </dd>
+            </div>
+            <div class="flex items-start justify-between gap-4">
+                <dt style="color: var(--text-tertiary);">Received</dt>
+                <dd class="text-right" style="color: var(--text-primary);">
+                    {{ deletion_request.created_at|date:"j M Y, H:i" }} UTC
+                </dd>
+            </div>
+            <div class="flex items-start justify-between gap-4">
+                <dt style="color: var(--text-tertiary);">Status</dt>
+                <dd class="text-right font-semibold"
+                    style="color: {% if deletion_request.status == 'failed' %}var(--error-500){% else %}var(--success-500){% endif %};">
+                    {{ deletion_request.get_status_display }}
+                </dd>
+            </div>
+            {% if deletion_request.accounts_deleted %}
+            <div class="flex items-start justify-between gap-4">
+                <dt style="color: var(--text-tertiary);">Accounts removed</dt>
+                <dd class="text-right" style="color: var(--text-primary);">
+                    {{ deletion_request.accounts_deleted }}
+                </dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+
+    <p class="text-center text-xs mt-6 leading-relaxed" style="color: var(--text-secondary);">
+        Keep this code if you need to reference the request. Deleting your connection removes the
+        stored access tokens, the connected account records and any posts that targeted only those
+        accounts.
+    </p>
+</div>
+{% endblock %}

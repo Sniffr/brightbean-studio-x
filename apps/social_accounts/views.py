@@ -27,10 +27,10 @@ from .models import MastodonAppRegistration, PlatformVisibility, SocialAccount
 from .oauth_aliases import from_url_slug, redirect_uri_from_request, to_url_slug
 from .oauth_pkce import issue_pkce_verifier, pkce_kwargs
 from .provider_factory import _get_provider_for_platform
+from .teardown import teardown_account
 from .webhooks import (
     subscribe_account_webhooks,
     subscribe_account_webhooks_task,
-    unsubscribe_account_webhooks,
 )
 
 logger = logging.getLogger(__name__)
@@ -374,6 +374,10 @@ def oauth_callback(request, platform):
                         "access_token": tokens.access_token,
                         "refresh_token": tokens.refresh_token,
                     },
+                    # Resolved here, while the *user* token is still in hand —
+                    # by the time the pages are created only page tokens
+                    # remain, and those resolve to the Page, not the person.
+                    "platform_user_id": _authorizing_user_id(platform, provider, tokens.access_token),
                     "pages": pages,
                 }
                 return redirect("social_accounts:select_account")
@@ -417,6 +421,7 @@ def oauth_callback(request, platform):
             refresh_token=tokens.refresh_token,
             expires_in=tokens.expires_in,
             instance_url=extra_creds.get("instance_url", ""),
+            platform_user_id=_authorizing_user_id(platform, provider, tokens.access_token, profile),
         )
         messages.success(request, f"Connected {profile.name} successfully.")
 
@@ -507,6 +512,7 @@ def select_account(request):
                 # Instagram-via-Facebook receives its webhooks through the
                 # linked Page, so remember which Page to subscribe.
                 webhook_target_id=page.get("page_id", ""),
+                platform_user_id=page_data.get("platform_user_id", ""),
             )
             connected.append(page["name"])
 
@@ -826,40 +832,7 @@ def disconnect(request, workspace_id, account_id):
     """Disconnect a social account."""
     account = get_object_or_404(SocialAccount.objects.for_workspace(workspace_id), id=account_id)
 
-    # Stop the platform pushing us this account's activity before we drop the
-    # token that would let us unsubscribe.
-    if account.oauth_access_token:
-        unsubscribe_account_webhooks(account)
-
-    # Try to revoke token
-    try:
-        provider = _get_provider_for_platform(account.platform, request.org.id)
-        if account.oauth_access_token:
-            provider.revoke_token(account.oauth_access_token)
-    except Exception:
-        logger.warning(
-            "Failed to revoke token for %s, proceeding with disconnect",
-            account,
-        )
-
-    # Delete posts that ONLY target this account (will be fully orphaned).
-    # Multi-platform posts keep their other PlatformPost targets via cascade.
-    from django.db.models import Count
-
-    from apps.composer.models import PlatformPost, Post
-
-    orphan_post_ids = list(
-        PlatformPost.objects.filter(social_account=account)
-        .values("post_id")
-        .annotate(total_platforms=Count("post__platform_posts"))
-        .filter(total_platforms=1)
-        .values_list("post_id", flat=True)
-    )
-    if orphan_post_ids:
-        Post.objects.filter(id__in=orphan_post_ids).delete()
-
-    account_name = account.account_name or account.account_handle
-    account.delete()
+    account_name = teardown_account(account)
 
     messages.success(request, f"Disconnected {account_name}.")
 
@@ -875,6 +848,43 @@ def disconnect(request, workspace_id, account_id):
 # ------------------------------------------------------------------
 
 
+# Platforms whose deauthorize and data-deletion callbacks identify a person by
+# their app-scoped user ID, which we therefore have to record at connect time —
+# nothing else in the row can be matched back to it later.
+_ASID_PLATFORMS = (
+    PlatformCredential.Platform.FACEBOOK,
+    PlatformCredential.Platform.INSTAGRAM,
+    PlatformCredential.Platform.INSTAGRAM_LOGIN,
+    PlatformCredential.Platform.THREADS,
+)
+
+# Of those, the ones that connect the authorizing user's *own* account, so the
+# profile already in hand is the answer. Facebook and Instagram connect a Page
+# instead and need a separate lookup against the user token.
+_SELF_ACCOUNT_PLATFORMS = (
+    PlatformCredential.Platform.INSTAGRAM_LOGIN,
+    PlatformCredential.Platform.THREADS,
+)
+
+
+def _authorizing_user_id(platform, provider, user_access_token, profile=None) -> str:
+    """App-scoped ID of the person who just granted access, or "" if unknown.
+
+    Never fatal: a connection that works must not fail because the extra lookup
+    did. The cost of missing it is that Meta's callbacks won't match this row,
+    which the next reconnect repairs.
+    """
+    if platform not in _ASID_PLATFORMS:
+        return ""
+    if platform in _SELF_ACCOUNT_PLATFORMS:
+        return str(profile.platform_id) if profile else ""
+    try:
+        return str(provider.get_profile(user_access_token).platform_id)
+    except Exception:
+        logger.warning("Could not resolve authorizing user for %s; deauth callbacks won't match.", platform)
+        return ""
+
+
 def _create_or_update_account(
     *,
     workspace_id,
@@ -885,6 +895,7 @@ def _create_or_update_account(
     expires_in=None,
     instance_url="",
     webhook_target_id="",
+    platform_user_id="",
 ):
     """Create or update a SocialAccount from OAuth results."""
     token_expires_at = None
@@ -896,6 +907,7 @@ def _create_or_update_account(
         platform=platform,
         account_platform_id=profile.platform_id,
         defaults={
+            "platform_user_id": platform_user_id,
             "account_name": profile.name,
             "account_handle": profile.handle or "",
             "avatar_url": profile.avatar_url or "",
