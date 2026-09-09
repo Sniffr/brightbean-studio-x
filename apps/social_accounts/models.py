@@ -29,6 +29,19 @@ class SocialAccount(models.Model):
         max_length=255,
         help_text="The account's native ID on the platform.",
     )
+    # The *person* who authorized this connection, as the platform scopes them
+    # to our app. Distinct from account_platform_id: connecting a Facebook Page
+    # stores the Page's ID there, while this holds the admin's app-scoped user
+    # ID — and Meta's deauthorize and data-deletion callbacks identify the user
+    # by exactly that, never by the Page. Blank on rows connected before this
+    # field existed, and on platforms that are not Meta.
+    platform_user_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="App-scoped ID of the user who authorized the connection.",
+    )
     account_name = models.CharField(max_length=255)
     account_handle = models.CharField(max_length=255, blank=True, default="")
     avatar_url = models.URLField(max_length=2000, blank=True, default="")
@@ -392,3 +405,41 @@ class AnalyticsPlatformConfig(models.Model):
         """
         rows = dict(cls.objects.values_list("platform", "is_enabled"))
         return [value for value, _label in PlatformCredential.Platform.choices if rows.get(value, True)]
+
+
+class MetaDataDeletionRequest(models.Model):
+    """One data-deletion callback from Meta, and what we did about it.
+
+    Meta requires the callback to answer with a confirmation code *and* a URL
+    the person can open to see how their request is going, so the record has to
+    outlive the accounts it deletes — that is the whole point of it. It holds no
+    tokens and no account rows, only the app-scoped user ID Meta signed and a
+    tally of what was torn down.
+    """
+
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Completed"
+        # Meta signs and sends the callback whether or not the user ever
+        # connected anything here, so "nothing matched" is a normal outcome and
+        # not a failure. Kept distinct so the status page can say so plainly.
+        NOTHING_TO_DELETE = "nothing_to_delete", "Nothing to delete"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Meta's confirmation code. Doubles as the status URL's lookup key, so it
+    # must be unguessable: it is the only thing protecting an unauthenticated
+    # page that confirms whether a given person had accounts here.
+    confirmation_code = models.CharField(max_length=64, unique=True, db_index=True)
+    platform = models.CharField(max_length=30, choices=PlatformCredential.Platform.choices)
+    platform_user_id = models.CharField(max_length=255, db_index=True)
+    status = models.CharField(max_length=20, choices=Status.choices)
+    accounts_deleted = models.PositiveIntegerField(default=0)
+    detail = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "social_accounts_meta_data_deletion_request"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.get_platform_display()} deletion {self.confirmation_code} ({self.status})"

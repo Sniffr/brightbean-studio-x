@@ -324,6 +324,10 @@ class TestOAuthCallbackView:
                 "access_token": "page-token",
             }
         ]
+        # The one thing get_profile is for on this path: the personal profile is
+        # never connected, but its ID is the app-scoped user ID Meta's
+        # deauthorize callback will arrive with.
+        mock_provider.get_profile.return_value = AccountProfile(platform_id="asid-42", name="Sidney")
         url = reverse("social_accounts:oauth_callback", kwargs={"platform": "instagram"})
 
         with patch("apps.social_accounts.views._get_provider_for_platform", return_value=mock_provider):
@@ -331,10 +335,13 @@ class TestOAuthCallbackView:
 
         assert response.status_code == 302
         assert response.url == reverse("social_accounts:select_account")
-        mock_provider.get_profile.assert_not_called()
+        # Pages are connected, never the personal profile — so nothing is
+        # created until the user picks one.
+        assert not SocialAccount.objects.filter(workspace=workspace, platform="instagram").exists()
         page_data = authenticated_client.session["oauth_page_select"]
         assert page_data["platform"] == "instagram"
         assert page_data["pages"][0]["id"] == "17841400000000000"
+        assert page_data["platform_user_id"] == "asid-42"
 
     def test_tiktok_callback_replays_pkce_verifier(self, authenticated_client, workspace, user):
         """The verifier stashed at connect is read from the session and replayed

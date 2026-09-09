@@ -377,7 +377,7 @@ For example, if your `APP_URL` is `https://brightbean.example.com`, the Facebook
 Facebook and Instagram share the same Meta app credentials. Threads runs on the same Meta app but uses a **separate app identity** — its own App ID, App Secret, and redirect URI list (steps 6-7 below).
 
 1. Go to [Meta for Developers](https://developers.facebook.com/) and create a new app (type: **Business**)
-2. Under **App Settings → Basic**, copy your **App ID** and **App Secret** — the plain ones, for Facebook and Instagram. Once the Threads use case is added this page also lists a **Threads App ID** / **Threads App Secret**; those are a different app identity and belong in the Threads variables in step 7, not here.
+2. Under **App Settings → Basic**, copy your **App ID** and **App Secret** — the plain ones, for Facebook and Instagram. Once the Threads use case is added this page also lists a **Threads App ID** / **Threads App Secret**; those are a different app identity and belong in the Threads variables in step 8, not here.
 3. In the App Dashboard, go to **Use cases** and add the following four use cases. For each use case, click into it and go to **Permissions and features** to add the required optional permissions:
 
    **Use case: "Manage everything on your Page"** (Facebook)
@@ -400,7 +400,7 @@ Facebook and Instagram share the same Meta app credentials. Threads runs on the 
    {APP_URL}/social-accounts/callback/facebook/
    {APP_URL}/social-accounts/callback/instagram/
    ```
-   > **Threads is separate.** Its callback does **not** belong here — the Threads use case keeps its own redirect URI list. See step 7.
+   > **Threads is separate.** Its callback does **not** belong here — the Threads use case keeps its own redirect URI list. See step 8.
 5. **Webhooks (required for the inbox).** In the App Dashboard, go to **Webhooks** (also reachable via **Use cases → Manage everything on your Page → Webhooks**) and subscribe to the **Page** object:
    - **Callback URL:** `{APP_URL}/webhooks/facebook/`
    - **Verify token:** the value of `FACEBOOK_WEBHOOK_VERIFY_TOKEN` from your `.env` (any random string; generate one and set the env var before clicking *Verify and save*)
@@ -413,13 +413,36 @@ Facebook and Instagram share the same Meta app credentials. Threads runs on the 
    - Subscribe to the `comments` and `mentions` fields.
 
    > `comments` and `mentions` belong to the **Instagram** object, not the Page — a Page accepts only its own fields (`feed`, `mention`, `messages`, …). Studio subscribes the Instagram *account* automatically on connect, but the object-level configuration here can only be done in the dashboard. Without it, Instagram comments arrive only via the 5-minute poll and mentions not at all.
-6. Set the environment variables:
+6. **Deauthorize and data deletion callbacks (required for App Review).** Under
+   **Facebook Login → Settings**, set:
+   ```
+   Deauthorize callback URL:   {APP_URL}/webhooks/meta/deauthorize/
+   Data deletion request URL:  {APP_URL}/webhooks/meta/data-deletion/
+   ```
+   Meta POSTs a `signed_request` to these when someone removes the app or asks
+   for their data to be deleted; Studio verifies the signature against your app
+   secret and disconnects the matching accounts — revoking tokens, unsubscribing
+   webhooks and removing posts that targeted only those accounts, exactly as the
+   in-app Disconnect button does. The data deletion endpoint answers with the
+   confirmation code and status URL Meta requires.
+
+   **Use the same two URLs for the Instagram and Threads use cases**, which have
+   their own copies of these fields (Threads refuses to save its redirect URI
+   until they are filled in). One endpoint serves all three: it identifies which
+   app called by which app secret verifies the signature, and only touches
+   accounts belonging to that app.
+
+   > **These match on the app-scoped user ID recorded when an account is
+   > connected**, which means accounts connected before this feature existed
+   > cannot be matched. Reconnecting an account records it. Until then a
+   > deauthorize callback for that person is accepted and does nothing.
+7. Set the environment variables:
    ```
    PLATFORM_FACEBOOK_APP_ID=your-app-id
    PLATFORM_FACEBOOK_APP_SECRET=your-app-secret
    FACEBOOK_WEBHOOK_VERIFY_TOKEN=your-random-verify-token
    ```
-7. **Threads:** the "Access the Threads API" use case gets its own App ID, App Secret, and redirect URIs. Go to **Use cases → Access the Threads API → Settings** and add the Threads redirect URI:
+8. **Threads:** the "Access the Threads API" use case gets its own App ID, App Secret, and redirect URIs. Go to **Use cases → Access the Threads API → Settings** and add the Threads redirect URI:
    ```
    {APP_URL}/social-accounts/callback/threads/
    ```

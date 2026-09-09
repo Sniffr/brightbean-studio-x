@@ -27,6 +27,9 @@ urlpatterns = [
     path("workspace/<uuid:workspace_id>/inbox/", include("apps.inbox.urls")),
     path("workspace/<uuid:workspace_id>/analytics/", include("apps.analytics.urls")),
     path("webhooks/", include("apps.inbox.webhook_urls")),
+    # Meta's deauthorize + data-deletion callbacks. Unauthenticated by
+    # requirement: Meta POSTs a signed_request, not a session.
+    path("webhooks/meta/", include("apps.social_accounts.meta_urls")),
     # Agent API (Phase 2) — programmatic access for external AI agents.
     # Authenticated via scoped bearer tokens issued from the Organization
     # → API Keys page. OpenAPI docs at /api/v1/docs. ``agent_api.urls``
