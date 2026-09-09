@@ -325,3 +325,55 @@ def test_outside_the_messaging_window_does_not_advise_reconnecting(client, fb_ac
     assert "24 hours" in body
     assert "will not help" in body
     assert "reconnect the account if this keeps happening" not in body
+
+
+def test_dm_past_the_seven_day_window_is_not_even_attempted(fb_account):
+    """No API call for a conversation the platform will certainly refuse.
+
+    HUMAN_AGENT extends the reply window to 7 days, not indefinitely. Sending
+    anyway spends a request to earn a rejection the member cannot act on.
+    """
+    from apps.inbox.views import ReplyWindowClosedError
+
+    message = _message(fb_account, message_type=InboxMessage.MessageType.DM, hours_ago=24 * 18)
+    provider = MagicMock()
+
+    with patch("providers.get_provider", return_value=provider), pytest.raises(ReplyWindowClosedError):
+        _send_platform_reply(message, "hi")
+
+    provider.reply_to_message.assert_not_called()
+
+
+def test_dm_inside_the_seven_day_window_is_still_attempted(fb_account):
+    """The ceiling must not swallow the days HUMAN_AGENT does cover."""
+    message = _message(fb_account, message_type=InboxMessage.MessageType.DM, hours_ago=24 * 3)
+    provider = MagicMock()
+    provider.reply_to_message.return_value = SimpleNamespace(platform_message_id="mid-1")
+
+    with patch("apps.inbox.views.get_provider", return_value=provider):
+        _send_platform_reply(message, "hi")
+
+    provider.reply_to_message.assert_called_once()
+    assert provider.reply_to_message.call_args.kwargs["human_agent"] is True
+
+
+@pytest.mark.django_db
+def test_a_closed_window_does_not_advise_reconnecting(client, fb_account, org_owner, user):
+    from apps.inbox.views import ReplyWindowClosedError
+    from apps.members.models import WorkspaceMembership
+
+    WorkspaceMembership.objects.create(
+        user=user, workspace=fb_account.workspace, workspace_role=WorkspaceMembership.WorkspaceRole.OWNER
+    )
+    message = _message(fb_account, message_type=InboxMessage.MessageType.DM)
+    client.force_login(user)
+
+    with patch("apps.inbox.views._send_platform_reply", side_effect=ReplyWindowClosedError("closed")):
+        response = client.post(
+            f"/workspace/{fb_account.workspace_id}/inbox/{message.id}/reply/",
+            {"body": "hi"},
+        )
+
+    body = response.content.decode()
+    assert "7-day reply window" in body
+    assert "reconnect the account if this keeps happening" not in body
