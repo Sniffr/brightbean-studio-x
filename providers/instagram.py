@@ -233,6 +233,21 @@ class InstagramProvider(SocialProvider):
             extra=data,
         )
 
+    def get_authorizing_user_id(self, access_token: str) -> str:
+        """App-scoped ID of the *person* who granted this token.
+
+        Meta's deauthorize and data-deletion callbacks identify someone by this
+        and nothing else — never by the Page or Instagram account that ends up
+        connected — so it cannot be read off the connected account's profile.
+        """
+        resp = self._request(
+            "GET",
+            f"{BASE_URL}/me",
+            access_token=access_token,
+            params={"fields": "id"},
+        )
+        return str(resp.json().get("id", ""))
+
     # ------------------------------------------------------------------
     # Accounts
     # ------------------------------------------------------------------

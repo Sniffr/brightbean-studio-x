@@ -324,10 +324,11 @@ class TestOAuthCallbackView:
                 "access_token": "page-token",
             }
         ]
-        # The one thing get_profile is for on this path: the personal profile is
-        # never connected, but its ID is the app-scoped user ID Meta's
-        # deauthorize callback will arrive with.
-        mock_provider.get_profile.return_value = AccountProfile(platform_id="asid-42", name="Sidney")
+        # Instagram-via-Facebook must record the *person*, not the Instagram
+        # Business account. get_profile returns the latter, so a provider that
+        # resolved the ASID from it would store an ID Meta never sends.
+        mock_provider.get_authorizing_user_id.return_value = "asid-42"
+        mock_provider.get_profile.return_value = AccountProfile(platform_id="17841400000000000", name="SoldOutAfrica")
         url = reverse("social_accounts:oauth_callback", kwargs={"platform": "instagram"})
 
         with patch("apps.social_accounts.views._get_provider_for_platform", return_value=mock_provider):
@@ -342,6 +343,40 @@ class TestOAuthCallbackView:
         assert page_data["platform"] == "instagram"
         assert page_data["pages"][0]["id"] == "17841400000000000"
         assert page_data["platform_user_id"] == "asid-42"
+
+    def test_instagram_records_the_person_not_the_instagram_account(self, authenticated_client, workspace, user):
+        """Regression: the stored ID must be the one Meta's callback carries.
+
+        Instagram-via-Facebook authenticates against the *Facebook* app, so a
+        deauthorize callback arrives with the Facebook app-scoped user ID.
+        ``get_profile`` on this provider resolves the Instagram Business account
+        instead — a different number that can never match, leaving the account
+        silently unreachable by deauthorization.
+        """
+        nonce = "nonce-asid"
+        state = _sign_state(workspace.id, "instagram", user.id, nonce)
+        session = authenticated_client.session
+        session[OAUTH_SESSION_KEY] = {"nonce": nonce}
+        session.save()
+
+        ig_account_id = "17841474539594119"
+        facebook_asid = "28418970281123892"
+
+        mock_provider = MagicMock()
+        mock_provider.exchange_code.return_value = OAuthTokens(access_token="user-token")
+        mock_provider.get_user_pages.return_value = [
+            {"id": ig_account_id, "name": "SoldOutAfrica", "access_token": "page-token"}
+        ]
+        mock_provider.get_profile.return_value = AccountProfile(platform_id=ig_account_id, name="SoldOutAfrica")
+        mock_provider.get_authorizing_user_id.return_value = facebook_asid
+
+        url = reverse("social_accounts:oauth_callback", kwargs={"platform": "instagram"})
+        with patch("apps.social_accounts.views._get_provider_for_platform", return_value=mock_provider):
+            authenticated_client.get(url, {"code": "abc123", "state": state})
+
+        stored = authenticated_client.session["oauth_page_select"]["platform_user_id"]
+        assert stored == facebook_asid
+        assert stored != ig_account_id
 
     def test_tiktok_callback_replays_pkce_verifier(self, authenticated_client, workspace, user):
         """The verifier stashed at connect is read from the session and replayed

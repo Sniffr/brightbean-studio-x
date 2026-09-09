@@ -255,3 +255,73 @@ def test_successful_send_records_the_reply(client, fb_account, org_owner, user):
     assert "HX-Reply-Failed" not in response
     reply = InboxReply.objects.get(inbox_message=message)
     assert reply.platform_reply_id == "mid.sent"
+
+
+@pytest.mark.django_db
+def test_unapproved_human_agent_does_not_advise_reconnecting(client, fb_account, org_owner, user):
+    """The generic advice is actively harmful for this failure.
+
+    A DM past 24 hours has to be tagged HUMAN_AGENT, and Meta refuses the tag
+    until the feature is approved. Neither retrying nor reconnecting changes
+    that — but the fallback sentence tells the member to do both, and following
+    it means disconnecting a healthy account (which deletes its single-target
+    posts) for nothing.
+    """
+    from apps.members.models import WorkspaceMembership
+    from providers.exceptions import APIError
+
+    WorkspaceMembership.objects.create(
+        user=user, workspace=fb_account.workspace, workspace_role=WorkspaceMembership.WorkspaceRole.OWNER
+    )
+    message = _message(fb_account, message_type=InboxMessage.MessageType.DM)
+    client.force_login(user)
+
+    refusal = APIError(
+        'Facebook API error 400: {"error":{"message":"(#100) Cannot tag messages with '
+        '\\"HUMAN_AGENT\\" without prior approval.","code":100,"error_subcode":2018276}}',
+        platform="facebook",
+        raw_response={"error": {"code": 100, "error_subcode": 2018276}},
+    )
+
+    with patch("apps.inbox.views._send_platform_reply", side_effect=refusal):
+        response = client.post(
+            f"/workspace/{fb_account.workspace_id}/inbox/{message.id}/reply/",
+            {"body": "hi"},
+        )
+
+    body = response.content.decode()
+    assert "Human Agent" in body
+    assert "will not help" in body
+    assert "reconnect the account if this keeps happening" not in body
+    # Raw platform diagnostics stay in the log, not the UI.
+    assert "fbtrace" not in body
+    assert "error_subcode" not in body
+
+
+@pytest.mark.django_db
+def test_outside_the_messaging_window_does_not_advise_reconnecting(client, fb_account, org_owner, user):
+    from apps.members.models import WorkspaceMembership
+    from providers.exceptions import APIError
+
+    WorkspaceMembership.objects.create(
+        user=user, workspace=fb_account.workspace, workspace_role=WorkspaceMembership.WorkspaceRole.OWNER
+    )
+    message = _message(fb_account, message_type=InboxMessage.MessageType.DM)
+    client.force_login(user)
+
+    refusal = APIError(
+        "Facebook API error 400",
+        platform="facebook",
+        raw_response={"error": {"code": 10, "error_subcode": 2018278}},
+    )
+
+    with patch("apps.inbox.views._send_platform_reply", side_effect=refusal):
+        response = client.post(
+            f"/workspace/{fb_account.workspace_id}/inbox/{message.id}/reply/",
+            {"body": "hi"},
+        )
+
+    body = response.content.decode()
+    assert "24 hours" in body
+    assert "will not help" in body
+    assert "reconnect the account if this keeps happening" not in body

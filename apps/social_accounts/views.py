@@ -878,8 +878,16 @@ def _authorizing_user_id(platform, provider, user_access_token, profile=None) ->
         return ""
     if platform in _SELF_ACCOUNT_PLATFORMS:
         return str(profile.platform_id) if profile else ""
+    # Deliberately NOT get_profile: for Instagram-via-Facebook that resolves the
+    # Instagram Business *account*, which is not the person and is not what the
+    # callback carries. get_authorizing_user_id asks the graph who owns the
+    # token instead.
+    resolve = getattr(provider, "get_authorizing_user_id", None)
+    if resolve is None:
+        logger.warning("%s provider cannot resolve an authorizing user; deauth callbacks won't match.", platform)
+        return ""
     try:
-        return str(provider.get_profile(user_access_token).platform_id)
+        return str(resolve(user_access_token))
     except Exception:
         logger.warning("Could not resolve authorizing user for %s; deauth callbacks won't match.", platform)
         return ""

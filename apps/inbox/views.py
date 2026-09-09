@@ -219,6 +219,30 @@ _COMMENT_LIKE_TYPES = {
 HUMAN_AGENT_AFTER = timedelta(hours=24)
 
 
+# Meta subcodes for "this conversation is outside the window you may write in".
+# Neither is fixed by retrying or reconnecting, so they must not fall through to
+# the generic advice — a member who follows it disconnects a healthy account for
+# nothing.
+_HUMAN_AGENT_UNAPPROVED = "2018276"  # (#100) tag used without Human Agent approval
+_OUTSIDE_MESSAGING_WINDOW = "2018278"  # (#10) 24h elapsed since their last message
+
+
+def _meta_error_subcode(exc: Exception) -> str:
+    """Meta's ``error_subcode`` for a provider error, or "" if there isn't one."""
+    raw = getattr(exc, "raw_response", None)
+    if isinstance(raw, dict):
+        error = raw.get("error")
+        if isinstance(error, dict) and error.get("error_subcode") is not None:
+            return str(error["error_subcode"])
+    # Providers that only carry the platform's text still render the subcode in
+    # the message, so fall back to matching on that.
+    text = str(exc)
+    for subcode in (_HUMAN_AGENT_UNAPPROVED, _OUTSIDE_MESSAGING_WINDOW):
+        if subcode in text:
+            return subcode
+    return ""
+
+
 def _reply_failure_reason(exc: Exception) -> str:
     """A short, actionable reason for the user.
 
@@ -230,6 +254,22 @@ def _reply_failure_reason(exc: Exception) -> str:
 
     if isinstance(exc, RateLimitError):
         return "the account has hit its rate limit. Wait a few minutes and try again."
+
+    subcode = _meta_error_subcode(exc)
+    if subcode == _HUMAN_AGENT_UNAPPROVED:
+        return (
+            "this conversation is older than 24 hours, and answering it needs the "
+            "Human Agent feature, which this app has not been approved for. "
+            "Request it under the Messenger use case in App Review. Retrying or "
+            "reconnecting will not help."
+        )
+    if subcode == _OUTSIDE_MESSAGING_WINDOW:
+        return (
+            "more than 24 hours have passed since their last message, so the "
+            "platform no longer allows a reply. Retrying or reconnecting will "
+            "not help — wait for them to write again."
+        )
+
     if isinstance(exc, TokenExpiredError | OAuthError):
         return "the connection has expired. Reconnect the account in Workspace Settings."
     return "the platform rejected it. Try again, or reconnect the account if this keeps happening."
