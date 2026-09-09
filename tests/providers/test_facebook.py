@@ -1,9 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, call
 
 import httpx
 import pytest
 
+from providers import facebook as facebook_module
 from providers.exceptions import APIError, PublishError, RateLimitError
 from providers.facebook import FacebookProvider
 from providers.types import PostType, PublishContent
@@ -17,6 +18,25 @@ FACEBOOK_POST_INSIGHTS_PARAM = "post_media_view,post_total_media_view_unique,pos
 
 def _resp(data):
     return MagicMock(json=MagicMock(return_value=data))
+
+
+# The comment fixtures below are anchored to a fixed August 2026 instant, so any
+# assertion about a window measured from "now" needs the clock pinned there too
+# — otherwise it silently drifts into failure as real time advances.
+FROZEN_NOW = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    """Pin ``providers.facebook``'s clock to :data:`FROZEN_NOW`."""
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return FROZEN_NOW if tz is None else FROZEN_NOW.astimezone(tz)
+
+    monkeypatch.setattr(facebook_module, "datetime", _FrozenDatetime)
+    return FROZEN_NOW
 
 
 def test_publish_multi_photo_post_stages_photos_then_publishes_feed_post():
@@ -886,7 +906,7 @@ def _comment(comment_id="comment-1", created="2026-08-07T09:00:00+0000", author_
     }
 
 
-def test_fetch_post_comments_uses_field_expansion_and_does_not_pass_caller_since_to_the_feed():
+def test_fetch_post_comments_uses_field_expansion_and_does_not_pass_caller_since_to_the_feed(frozen_clock):
     """`since` on /feed filters by POST time, so passing the caller's `since`
     would hide every new comment on an older post."""
     provider = FacebookProvider({"client_id": "id", "client_secret": "secret", "page_id": "page-1"})
@@ -901,6 +921,8 @@ def test_fetch_post_comments_uses_field_expansion_and_does_not_pass_caller_since
     assert "comments.limit(50){id,message,created_time,from,parent,permalink_url}" in kwargs["params"]["fields"]
     assert kwargs["params"]["limit"] == 25
     # The feed floor is the 30-day post window, not the caller's `since`.
+    feed_floor = frozen_clock - timedelta(days=facebook_module.FACEBOOK_FEED_WINDOW_DAYS)
+    assert kwargs["params"]["since"] == int(feed_floor.timestamp())
     assert kwargs["params"]["since"] < int(since.timestamp())
 
 
