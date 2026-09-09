@@ -8,6 +8,7 @@ from providers.exceptions import APIError
 from providers.instagram import InstagramProvider
 from providers.instagram_login import InstagramLoginProvider
 from providers.meta_comments import INSTAGRAM_COMMENT_FIELD_SETS
+from providers.types import PostType, PublishContent, PublishResult
 
 
 def _resp(data):
@@ -933,3 +934,39 @@ def test_comment_poll_keeps_the_author_when_only_replies_are_rejected(make_provi
     sent = provider._request.call_args_list[1].kwargs["params"]["fields"]
     assert "from{" in sent
     assert "replies" not in sent
+
+
+@pytest.mark.parametrize(
+    "provider_cls, publish",
+    [
+        (InstagramProvider, lambda p, c: p._publish_single("tok", "ig-user-1", c)),
+        (InstagramLoginProvider, lambda p, c: p._publish_single("tok", c)),
+    ],
+    ids=["instagram", "instagram_login"],
+)
+def test_lone_video_publishes_as_a_reel_not_an_image(provider_cls, publish):
+    """A single video must take the REELS path on *both* Instagram providers.
+
+    Instagram dropped standalone feed videos, so a lone video asset — which the
+    engine types as PostType.VIDEO — has to be published as a Reel. Falling
+    through to the IMAGE branch sends the .mp4 as ``image_url``, and Instagram
+    answers "The image format is not supported" (code 36001) after trying to
+    transcode it to JPEG. instagram.py was fixed for this; instagram_login.py
+    was not, so Instagram Direct rejected every video.
+    """
+    provider = provider_cls({"client_id": "id", "client_secret": "secret"})
+    provider._create_container = MagicMock(return_value="container-1")
+    provider._wait_for_container = MagicMock()
+    provider._publish_container = MagicMock(return_value=PublishResult(platform_post_id="post-1"))
+
+    content = PublishContent(
+        text="hello",
+        media_urls=["https://cdn.example.com/clip.mp4"],
+        post_type=PostType.VIDEO,
+    )
+    publish(provider, content)
+
+    payload = provider._create_container.call_args.args[-1]
+    assert payload["media_type"] == "REELS"
+    assert payload["video_url"] == "https://cdn.example.com/clip.mp4"
+    assert "image_url" not in payload
